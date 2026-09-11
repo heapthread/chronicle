@@ -2,16 +2,15 @@
 
 **The human-friendly version control system built for developers who hate memorizing Git commands.**
 
-Chronicle eliminates Git’s steep learning curve with plain-English commands, automatic file tracking, and built-in safety nets—all while maintaining 100% native compatibility with standard `.git` repositories, Codeberg, GitHub, and GitLab.
+Chronicle eliminates Git’s steep learning curve with plain-English commands, automatic file tracking, and built-in safety nets, all while maintaining 100% native compatibility with standard .git repositories, Codeberg, GitHub, and GitLab.
 
 ---
 
 ## Key Features
 
-* **No Staging Area:** Never run `git add` again. Modified and new files are automatically included in your saves unless listed in `.gitignore`.
-* **Human-Readable Terminology:** Ditch obscure terms like *detached HEAD*, *staging index*, and *cherry-pick*.
-* **Native Windows UTF-8 Output:** Clean console output (`✓`, `●`, `↺`) out of the box in PowerShell and Command Prompt.
-* **Native Git Storage:** Built on `libgit2`. Teammates using standard Git won't even know you're using Chronicle.
+* **No Staging Area:** Never run git add again. Modified and new files are automatically included in your saves unless listed in .gitignore.
+* **Human-Readable Terminology:** Ditch obscure terms like detached HEAD, staging index, and cherry-pick.
+* **Native Git Storage:** Built on libgit2. Teammates using standard Git won't even know you're using Chronicle.
 * **Seamless Authentication:** Automatically hooks into Windows Credential Manager and SSH keys to push changes to Codeberg/GitHub smoothly.
 
 ---
