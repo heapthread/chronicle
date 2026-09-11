@@ -2,7 +2,7 @@
 
 **The human-friendly version control system built for developers who hate memorizing Git commands.**
 
-Chronicle eliminates Git’s steep learning curve with plain-English commands, automatic file tracking, and built-in safety nets, all while maintaining 100% native compatibility with standard .git repositories, Codeberg, GitHub, and GitLab.
+Chronicle eliminates Git’s steep learning curve with plain-English commands, automatic file tracking, and built-in safety nets, all while maintaining 100% native compatibility with standard .git repositories, GitHub, GitLab and Codeberg.
 
 ---
 
