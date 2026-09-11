@@ -30,7 +30,6 @@ int get_windows_git_credentials(const char *url, char *user_out, char *pass_out,
     char target_git[512] = {0};
     char target_raw[512] = {0};
 
-    // Extract domain from URL (e.g. https://codeberg.org/user/repo.git -> codeberg.org)
     const char *domain = strstr(url, "://");
     domain = domain ? domain + 3 : url;
 
@@ -65,7 +64,6 @@ int credentials_cb(
 {
     (void)payload;
 
-    // 1. Try Windows Credential Manager
     if (allowed_types & GIT_CREDTYPE_USERPASS_PLAINTEXT) {
         char user[256] = {0};
         char pass[256] = {0};
@@ -74,7 +72,6 @@ int credentials_cb(
             return git_cred_userpass_plaintext_new(out, user, pass);
         }
 
-        // 2. Try Environment Variables
         const char *token = getenv("CODEBERG_TOKEN");
         if (!token) token = getenv("GITHUB_TOKEN");
         if (!token) token = getenv("GIT_TOKEN");
@@ -84,7 +81,6 @@ int credentials_cb(
             return git_cred_userpass_plaintext_new(out, username, token);
         }
 
-        // 3. Interactive Console Prompt if no saved credentials exist
         printf("\n--- Authentication Required ---\n");
         printf("Username: ");
         if (fgets(user, sizeof(user), stdin)) {
@@ -102,12 +98,10 @@ int credentials_cb(
         }
     }
 
-    // 4. SSH Agent Key Authentication
     if (allowed_types & GIT_CREDTYPE_SSH_KEY) {
         return git_cred_ssh_key_from_agent(out, username_from_url);
     }
 
-    // 5. Default SSH Keys (~/.ssh/)
     if (allowed_types & GIT_CREDTYPE_SSH_KEY) {
         const char *user = (username_from_url && strlen(username_from_url) > 0) ? username_from_url : "git";
         return git_cred_ssh_key_default_new(out, user);
@@ -251,12 +245,7 @@ void cmd_discard() {
 }
 
 // Line printing callback for diff output
-int diff_print_callback(
-    const git_diff_delta *delta,
-    const git_diff_hunk *hunk,
-    const git_diff_line *line,
-    void *payload) 
-{
+int diff_print_callback(const git_diff_delta *delta, const git_diff_hunk *hunk, const git_diff_line *line, void *payload) {
     (void)delta; (void)hunk; (void)payload;
     fwrite(line->content, 1, line->content_len, stdout);
     return 0;
@@ -303,7 +292,43 @@ void cmd_timeline_switch(const char *name) {
     git_repository_free(repo);
 }
 
-// 8. SYNC: Push changes to remote repository
+// Helper to complete a merge commit if remote changes were pulled
+void create_merge_commit(git_repository *repo, git_annotated_commit *remote_commit, const char *branch_name) {
+    git_oid tree_oid, commit_oid;
+    git_tree *tree = NULL;
+    git_index *index = NULL;
+    git_signature *sig = NULL;
+    git_commit *head_commit = NULL, *remote_commit_obj = NULL;
+    git_reference *head_ref = NULL;
+
+    check_git_error(git_repository_index(&index, repo), "getting index");
+    check_git_error(git_index_write_tree(&tree_oid, index), "writing tree");
+    check_git_error(git_tree_lookup(&tree, repo, &tree_oid), "looking up tree");
+
+    check_git_error(git_repository_head(&head_ref, repo), "getting HEAD");
+    check_git_error(git_reference_peel((git_object **)&head_commit, head_ref, GIT_OBJECT_COMMIT), "peeling HEAD");
+    check_git_error(git_commit_lookup(&remote_commit_obj, repo, git_annotated_commit_id(remote_commit)), "looking up remote commit");
+
+    if (git_signature_default(&sig, repo) < 0) {
+        git_signature_now(&sig, "Chronicle User", "user@chronicle.local");
+    }
+
+    const git_commit *parents[] = { head_commit, remote_commit_obj };
+    char msg[256];
+    snprintf(msg, sizeof(msg), "Merge remote timeline into %s", branch_name);
+
+    check_git_error(git_commit_create(&commit_oid, repo, "HEAD", sig, sig, NULL, msg, tree, 2, parents), "creating merge commit");
+    git_repository_state_cleanup(repo);
+
+    if (sig) git_signature_free(sig);
+    if (tree) git_tree_free(tree);
+    if (index) git_index_free(index);
+    if (head_commit) git_commit_free(head_commit);
+    if (remote_commit_obj) git_commit_free(remote_commit_obj);
+    if (head_ref) git_reference_free(head_ref);
+}
+
+// 8. SYNC: Auto-fetch, merge remote changes, and push
 void cmd_sync(const char *remote_name) {
     git_repository *repo = NULL;
     git_remote *remote = NULL;
@@ -316,10 +341,43 @@ void cmd_sync(const char *remote_name) {
     printf("↓ Syncing timeline '%s' with remote '%s'...\n", branch_name, remote_name);
 
     if (git_remote_lookup(&remote, repo, remote_name) < 0) {
-        printf("Error: Remote '%s' is not configured.\nAdd a remote using standard git tools or config.\n", remote_name);
+        printf("Error: Remote '%s' is not configured.\n", remote_name);
         goto cleanup;
     }
 
+    // 1. Fetch remote changes
+    printf("→ Fetching latest changes from remote...\n");
+    git_fetch_options fetch_opts = GIT_FETCH_OPTIONS_INIT;
+    fetch_opts.callbacks.credentials = credentials_cb;
+    if (git_remote_fetch(remote, NULL, &fetch_opts, NULL) < 0) {
+        const git_error *e = git_error_last();
+        printf("Warning: Fetching failed (%s). Attempting push...\n", (e && e->message) ? e->message : "unknown");
+    }
+
+    // 2. Perform merge integration if FETCH_HEAD exists
+    git_annotated_commit *fetch_head = NULL;
+    git_reference *fetch_ref = NULL;
+    if (git_reference_lookup(&fetch_ref, repo, "FETCH_HEAD") == 0) {
+        if (git_annotated_commit_from_ref(&fetch_head, repo, fetch_ref) == 0) {
+            git_merge_analysis_t analysis;
+            git_merge_preference_t preference;
+            git_merge_analysis(&analysis, &preference, repo, (const git_annotated_commit **)&fetch_head, 1);
+
+            if (analysis & GIT_MERGE_ANALYSIS_NORMAL) {
+                git_merge_options merge_opts = GIT_MERGE_OPTIONS_INIT;
+                git_checkout_options checkout_opts = GIT_CHECKOUT_OPTIONS_INIT;
+                checkout_opts.checkout_strategy = GIT_CHECKOUT_SAFE;
+
+                git_merge(repo, (const git_annotated_commit **)&fetch_head, 1, &merge_opts, &checkout_opts);
+                create_merge_commit(repo, fetch_head, branch_name);
+                printf("✓ Automatically merged remote changes.\n");
+            }
+            git_annotated_commit_free(fetch_head);
+        }
+        git_reference_free(fetch_ref);
+    }
+
+    // 3. Push to remote
     char refspec[256];
     snprintf(refspec, sizeof(refspec), "refs/heads/%s:refs/heads/%s", branch_name, branch_name);
     const char *push_refspecs[] = { refspec };
@@ -333,7 +391,7 @@ void cmd_sync(const char *remote_name) {
         printf("✓ Sync complete! Uploaded timeline '%s' to remote '%s'.\n", branch_name, remote_name);
     } else {
         const git_error *e = git_error_last();
-        printf("Error syncing with remote: %s\n", (e && e->message) ? e->message : "Authentication or network failure");
+        printf("Error syncing with remote: %s\n", (e && e->message) ? e->message : "Authentication or conflict error");
     }
 
 cleanup:
