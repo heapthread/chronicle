@@ -14,7 +14,6 @@
 #pragma comment(lib, "User32.lib")
 #pragma comment(lib, "Credui.lib")
 
-// Helper to handle libgit2 errors gracefully
 void check_git_error(int error, const char *action) {
     if (error < 0) {
         const git_error *e = git_error_last();
@@ -24,7 +23,6 @@ void check_git_error(int error, const char *action) {
     }
 }
 
-// Search Windows Credential Manager across multiple target formats
 int get_windows_git_credentials(const char *url, char *user_out, char *pass_out, size_t max_len) {
     CREDENTIALA *cred = NULL;
     char target_git[512] = {0};
@@ -43,7 +41,7 @@ int get_windows_git_credentials(const char *url, char *user_out, char *pass_out,
             if (cred->UserName && cred->CredentialBlob) {
                 strncpy(user_out, cred->UserName, max_len - 1);
                 size_t blob_size = cred->CredentialBlobSize < max_len - 1 ? cred->CredentialBlobSize : max_len - 1;
-                memcpy(pass_out, cred->CredentialBlob, blob_size);
+                memcpy(pass_out, (char *)cred->CredentialBlob, blob_size);
                 pass_out[blob_size] = '\0';
                 CredFree(cred);
                 return 1;
@@ -54,7 +52,23 @@ int get_windows_git_credentials(const char *url, char *user_out, char *pass_out,
     return 0;
 }
 
-// Credentials callback supporting Windows Credential Manager, Tokens, SSH, and Interactive Input
+void save_windows_git_credentials(const char *url, const char *user, const char *pass) {
+    char target_git[512] = {0};
+    const char *domain = strstr(url, "://");
+    domain = domain ? domain + 3 : url;
+    snprintf(target_git, sizeof(target_git), "git:https://%s", domain);
+
+    CREDENTIALA cred = {0};
+    cred.Type = CRED_TYPE_GENERIC;
+    cred.TargetName = target_git;
+    cred.UserName = (char *)user;
+    cred.CredentialBlobSize = (DWORD)strlen(pass);
+    cred.CredentialBlob = (LPBYTE)pass;
+    cred.Persist = CRED_PERSIST_LOCAL_MACHINE;
+
+    CredWriteA(&cred, 0);
+}
+
 int credentials_cb(
     git_cred **out,
     const char *url,
@@ -94,6 +108,7 @@ int credentials_cb(
         printf("-------------------------------\n");
 
         if (strlen(user) > 0 && strlen(pass) > 0) {
+            save_windows_git_credentials(url, user, pass);
             return git_cred_userpass_plaintext_new(out, user, pass);
         }
     }
@@ -110,7 +125,6 @@ int credentials_cb(
     return git_cred_default_new(out);
 }
 
-// 1. INIT: Initialize repository
 void cmd_init() {
     git_repository *repo = NULL;
     check_git_error(git_repository_init(&repo, ".", 0), "initializing repository");
@@ -119,7 +133,6 @@ void cmd_init() {
     git_repository_free(repo);
 }
 
-// 2. SAVE: Auto-stage all non-ignored files and create a checkpoint
 void cmd_save(const char *message) {
     git_repository *repo = NULL;
     git_index *index = NULL;
@@ -167,7 +180,6 @@ void cmd_save(const char *message) {
     git_repository_free(repo);
 }
 
-// 3. HISTORY: Walk commit log
 void cmd_history() {
     git_repository *repo = NULL;
     git_revwalk *walker = NULL;
@@ -201,7 +213,6 @@ void cmd_history() {
     git_repository_free(repo);
 }
 
-// 4. STATUS: View draft changes
 void cmd_status() {
     git_repository *repo = NULL;
     git_status_list *status = NULL;
@@ -232,7 +243,6 @@ void cmd_status() {
     git_repository_free(repo);
 }
 
-// 5. DISCARD: Reset unsaved edits
 void cmd_discard() {
     git_repository *repo = NULL;
     git_checkout_options opts = GIT_CHECKOUT_OPTIONS_INIT;
@@ -244,14 +254,12 @@ void cmd_discard() {
     git_repository_free(repo);
 }
 
-// Line printing callback for diff output
 int diff_print_callback(const git_diff_delta *delta, const git_diff_hunk *hunk, const git_diff_line *line, void *payload) {
     (void)delta; (void)hunk; (void)payload;
     fwrite(line->content, 1, line->content_len, stdout);
     return 0;
 }
 
-// 6. DIFF: Inspect line edits
 void cmd_diff() {
     git_repository *repo = NULL;
     git_diff *diff = NULL;
@@ -264,7 +272,6 @@ void cmd_diff() {
     git_repository_free(repo);
 }
 
-// 7. TIMELINE: Create or Switch timeline (branching)
 void cmd_timeline_switch(const char *name) {
     git_repository *repo = NULL;
     git_reference *branch_ref = NULL;
@@ -292,7 +299,6 @@ void cmd_timeline_switch(const char *name) {
     git_repository_free(repo);
 }
 
-// Helper to complete a merge commit if remote changes were pulled
 void create_merge_commit(git_repository *repo, git_annotated_commit *remote_commit, const char *branch_name) {
     git_oid tree_oid, commit_oid;
     git_tree *tree = NULL;
@@ -328,7 +334,6 @@ void create_merge_commit(git_repository *repo, git_annotated_commit *remote_comm
     if (head_ref) git_reference_free(head_ref);
 }
 
-// 8. SYNC: Auto-fetch, merge remote changes, and push
 void cmd_sync(const char *remote_name) {
     git_repository *repo = NULL;
     git_remote *remote = NULL;
@@ -345,7 +350,6 @@ void cmd_sync(const char *remote_name) {
         goto cleanup;
     }
 
-    // 1. Fetch remote changes
     printf("→ Fetching latest changes from remote...\n");
     git_fetch_options fetch_opts = GIT_FETCH_OPTIONS_INIT;
     fetch_opts.callbacks.credentials = credentials_cb;
@@ -354,7 +358,6 @@ void cmd_sync(const char *remote_name) {
         printf("Warning: Fetching failed (%s). Attempting push...\n", (e && e->message) ? e->message : "unknown");
     }
 
-    // 2. Perform merge integration if FETCH_HEAD exists
     git_annotated_commit *fetch_head = NULL;
     git_reference *fetch_ref = NULL;
     if (git_reference_lookup(&fetch_ref, repo, "FETCH_HEAD") == 0) {
@@ -377,7 +380,6 @@ void cmd_sync(const char *remote_name) {
         git_reference_free(fetch_ref);
     }
 
-    // 3. Push to remote
     char refspec[256];
     snprintf(refspec, sizeof(refspec), "refs/heads/%s:refs/heads/%s", branch_name, branch_name);
     const char *push_refspecs[] = { refspec };
@@ -400,7 +402,6 @@ cleanup:
     git_repository_free(repo);
 }
 
-// 9. UNDO: Step back via HEAD reflog
 void cmd_undo() {
     git_repository *repo = NULL;
     git_reflog *reflog = NULL;
@@ -434,7 +435,6 @@ cleanup:
     git_repository_free(repo);
 }
 
-// Entrypoint
 int main(int argc, char *argv[]) {
     SetConsoleOutputCP(CP_UTF8);
     git_libgit2_init();
